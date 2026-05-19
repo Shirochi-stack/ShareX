@@ -386,6 +386,7 @@ namespace ShareX
             imageData.ImageFormat = taskSettings.ImageSettings.ImageFormat;
 
             if (taskSettings.ImageSettings.ImageAutoUseJPEG && taskSettings.ImageSettings.ImageFormat != EImageFormat.JPEG &&
+                taskSettings.ImageSettings.ImageFormat != EImageFormat.WEBP &&
                 imageData.ImageStream.Length > taskSettings.ImageSettings.ImageAutoUseJPEGSize * 1000)
             {
                 imageData.ImageStream.Dispose();
@@ -472,6 +473,9 @@ namespace ShareX
                     case EImageFormat.TIFF:
                         img.Save(ms, ImageFormat.Tiff);
                         break;
+                    case EImageFormat.WEBP:
+                        SaveWebP(img, ms, jpegQuality);
+                        break;
                 }
             }
             catch (Exception e)
@@ -481,6 +485,15 @@ namespace ShareX
             }
 
             return ms;
+        }
+
+        private static void SaveWebP(Image img, Stream stream, int quality)
+        {
+            using Bitmap bitmap = new Bitmap(img);
+            using SKBitmap skBitmap = bitmap.ToSKBitmap();
+            using SKImage skImage = SKImage.FromBitmap(skBitmap);
+            using SKData data = skImage.Encode(SKEncodedImageFormat.Webp, quality);
+            data.SaveTo(stream);
         }
 
         public static void SaveImageAsFile(Bitmap bmp, TaskSettings taskSettings, bool overwriteFile = false)
