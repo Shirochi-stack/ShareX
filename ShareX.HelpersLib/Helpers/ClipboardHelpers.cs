@@ -24,6 +24,7 @@
 #endregion License Information (GPL v3)
 
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -31,12 +32,15 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
+using System.Windows.Media.Imaging;
 
 namespace ShareX.HelpersLib
 {
     public static class ClipboardHelpers
     {
         public const string FORMAT_PNG = "PNG";
+        public const string FORMAT_WEBP = "WebP";
+        public const string FORMAT_WEBP_MIME = "image/webp";
         public const string FORMAT_17 = "Format17";
 
         private const int RetryTimes = 20;
@@ -225,7 +229,15 @@ namespace ShareX.HelpersLib
                     IDataObject dataObject = new DataObject();
                     dataObject.SetData(DataFormats.FileDrop, true, paths);
 
-                    return CopyData(dataObject);
+                    using (DisposableList disposableData = new DisposableList())
+                    {
+                        if (paths.Length == 1)
+                        {
+                            AddWebPFileData(dataObject, paths[0], disposableData);
+                        }
+
+                        return CopyData(dataObject);
+                    }
                 }
                 catch (Exception e)
                 {
@@ -236,12 +248,125 @@ namespace ShareX.HelpersLib
             return false;
         }
 
+        private static void AddWebPFileData(IDataObject dataObject, string path, DisposableList disposableData)
+        {
+            if (dataObject == null || string.IsNullOrEmpty(path) || !File.Exists(path) ||
+                !FileHelpers.CheckExtension(path, new[] { "webp" }))
+            {
+                return;
+            }
+
+            byte[] webpBytes = File.ReadAllBytes(path);
+            string base64 = Convert.ToBase64String(webpBytes);
+
+            MemoryStream webpMimeStream = new MemoryStream(webpBytes);
+            MemoryStream webpStream = new MemoryStream(webpBytes);
+            MemoryStream upperWebPStream = new MemoryStream(webpBytes);
+            disposableData.Add(webpMimeStream);
+            disposableData.Add(webpStream);
+            disposableData.Add(upperWebPStream);
+
+            dataObject.SetData(FORMAT_WEBP_MIME, false, webpMimeStream);
+            dataObject.SetData(FORMAT_WEBP, false, webpStream);
+            dataObject.SetData("WEBP", false, upperWebPStream);
+            AddWebPPreviewData(dataObject, path, disposableData);
+
+            string dataUrl = $"data:image/webp;base64,{base64}";
+            string htmlFragment = GenerateHTMLFragment($"<img src=\"{dataUrl}\" alt=\"{Path.GetFileName(path)}\"/>");
+            dataObject.SetData(DataFormats.Html, false, htmlFragment);
+        }
+
+        private static void AddWebPPreviewData(IDataObject dataObject, string path, DisposableList disposableData)
+        {
+            try
+            {
+                Bitmap preview = LoadBitmapUsingWIC(path);
+                MemoryStream dibStream = new MemoryStream(ClipboardHelpersEx.ConvertToDib(preview));
+                disposableData.Add(preview);
+                disposableData.Add(dibStream);
+
+                dataObject.SetData(DataFormats.Bitmap, true, preview);
+                dataObject.SetData(DataFormats.Dib, false, dibStream);
+            }
+            catch (Exception e)
+            {
+                DebugHelper.WriteException(e, "WebP clipboard preview generation failed.");
+            }
+        }
+
+        private static Bitmap LoadBitmapUsingWIC(string path)
+        {
+            using (FileStream fs = File.OpenRead(path))
+            {
+                BitmapDecoder decoder = BitmapDecoder.Create(fs, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                BitmapSource source = decoder.Frames[0];
+
+                if (source.Format != System.Windows.Media.PixelFormats.Bgra32)
+                {
+                    source = new FormatConvertedBitmap(source, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+                }
+
+                int width = source.PixelWidth;
+                int height = source.PixelHeight;
+                int stride = width * 4;
+                byte[] pixels = new byte[stride * height];
+                source.CopyPixels(pixels, stride, 0);
+
+                Bitmap bmp = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                BitmapData bitmapData = bmp.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+                try
+                {
+                    Marshal.Copy(pixels, 0, bitmapData.Scan0, pixels.Length);
+                }
+                finally
+                {
+                    bmp.UnlockBits(bitmapData);
+                }
+
+                return bmp;
+            }
+        }
+
+        private sealed class DisposableList : IDisposable
+        {
+            private readonly List<IDisposable> items = new List<IDisposable>();
+
+            public void Add(IDisposable item)
+            {
+                if (item != null)
+                {
+                    items.Add(item);
+                }
+            }
+
+            public void Dispose()
+            {
+                foreach (IDisposable item in items)
+                {
+                    item.Dispose();
+                }
+            }
+        }
+
         public static bool CopyImageFromFile(string path)
         {
             if (!string.IsNullOrEmpty(path) && File.Exists(path))
             {
                 try
                 {
+                    if (FileHelpers.CheckExtension(path, new[] { "webp" }))
+                    {
+                        IDataObject dataObject = new DataObject();
+                        dataObject.SetData(DataFormats.FileDrop, true, new string[] { path });
+
+                        using (DisposableList disposableData = new DisposableList())
+                        {
+                            AddWebPFileData(dataObject, path, disposableData);
+                            return CopyData(dataObject);
+                        }
+                    }
+
                     using (Bitmap bmp = ImageHelpers.LoadImage(path))
                     {
                         string fileName = Path.GetFileName(path);
